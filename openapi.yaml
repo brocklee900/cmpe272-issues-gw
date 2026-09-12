@@ -1,0 +1,345 @@
+openapi: 3.1.0
+info:
+  title: GitHub Issues Gateway
+  version: "1.0.0"
+  description: >
+    A small HTTP API that wraps the GitHub REST API for Issues on a single,
+    configured repository. Provides issue CRUD, comments, and a webhook
+    receiver for `issues` / `issue_comment` events.
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+
+tags:
+  - name: issues
+  - name: webhook
+  - name: events
+  - name: health
+
+paths:
+  /issues:
+    post:
+      tags: [issues]
+      summary: Create an issue
+      operationId: createIssue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IssueCreate"
+            examples:
+              basic:
+                value: { title: "Bug: login fails", body: "Steps to reproduce...", labels: ["bug"] }
+      responses:
+        "201":
+          description: Issue created
+          headers:
+            Location:
+              schema: { type: string }
+              description: Path to the new issue, e.g. /issues/42
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+              examples:
+                created:
+                  value:
+                    number: 42
+                    html_url: "https://github.com/owner/repo/issues/42"
+                    state: open
+                    title: "Bug: login fails"
+                    body: "Steps to reproduce..."
+                    labels: ["bug"]
+                    created_at: "2026-09-01T12:00:00Z"
+                    updated_at: "2026-09-01T12:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    get:
+      tags: [issues]
+      summary: List issues
+      operationId: listIssues
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [open, closed, all], default: open }
+        - name: labels
+          in: query
+          schema: { type: string }
+          description: Comma-separated label names
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: per_page
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        "200":
+          description: A page of issues
+          headers:
+            Link:
+              schema: { type: string }
+              description: RFC 5988 pagination links (rel=next,prev,first,last)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Issue" }
+              examples:
+                page:
+                  value:
+                    - number: 42
+                      html_url: "https://github.com/owner/repo/issues/42"
+                      state: open
+                      title: "Bug: login fails"
+                      body: null
+                      labels: ["bug"]
+                      created_at: "2026-09-01T12:00:00Z"
+                      updated_at: "2026-09-01T12:00:00Z"
+
+  /issues/{number}:
+    parameters:
+      - name: number
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [issues]
+      summary: Get a single issue
+      operationId: getIssue
+      responses:
+        "200":
+          description: The issue
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [issues]
+      summary: Update an issue (rename, edit body, close/open)
+      operationId: updateIssue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IssueUpdate" }
+            examples:
+              close:
+                value: { state: "closed" }
+      responses:
+        "200":
+          description: Updated issue
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /issues/{number}/comments:
+    parameters:
+      - name: number
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [issues]
+      summary: Add a comment to an issue
+      operationId: createComment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommentCreate" }
+            examples:
+              basic:
+                value: { body: "Thanks for the report, looking into it." }
+      responses:
+        "201":
+          description: Comment created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /webhook:
+    post:
+      tags: [webhook]
+      summary: Receive a GitHub webhook delivery
+      description: >
+        Verifies the `X-Hub-Signature-256` HMAC signature against the shared
+        WEBHOOK_SECRET, then persists and acknowledges known event types
+        (`ping`, `issues`, `issue_comment`).
+      operationId: receiveWebhook
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-GitHub-Delivery
+          in: header
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "204":
+          description: Accepted (or duplicate delivery, safely ignored)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid or missing signature
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /events:
+    get:
+      tags: [events]
+      summary: List recently processed webhook deliveries (debugging aid)
+      operationId: listEvents
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Recent webhook deliveries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WebhookEvent" }
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: healthz
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "ok" }
+
+components:
+  securitySchemes:
+    githubBearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Server-side only. Your service authenticates to GitHub using
+        GITHUB_TOKEN; clients of *this* API do not need to supply it.
+
+  responses:
+    BadRequest:
+      description: Invalid request payload
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            missingTitle:
+              value: { error: "validation_error", message: "title is required", status: 400 }
+    Unauthorized:
+      description: Missing or invalid GitHub credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            badToken:
+              value: { error: "upstream_auth_error", message: "GitHub auth failed: Bad credentials", status: 401 }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            missing:
+              value: { error: "not_found", message: "GitHub resource not found", status: 404 }
+
+  schemas:
+    Issue:
+      type: object
+      required: [number, html_url, state, title, labels, created_at, updated_at]
+      properties:
+        number: { type: integer, example: 42 }
+        html_url: { type: string, format: uri }
+        state: { type: string, enum: [open, closed] }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        labels:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    IssueCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 256 }
+        body: { type: string }
+        labels:
+          type: array
+          items: { type: string }
+
+    IssueUpdate:
+      type: object
+      properties:
+        title: { type: string, minLength: 1, maxLength: 256 }
+        body: { type: string }
+        state: { type: string, enum: [open, closed] }
+
+    Comment:
+      type: object
+      required: [id, body, user, created_at, html_url]
+      properties:
+        id: { type: integer }
+        body: { type: string }
+        user: { type: string }
+        created_at: { type: string, format: date-time }
+        html_url: { type: string, format: uri }
+
+    CommentCreate:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string, minLength: 1 }
+
+    WebhookEvent:
+      type: object
+      required: [id, event, timestamp]
+      properties:
+        id: { type: string }
+        event: { type: string }
+        action: { type: [string, "null"] }
+        issue_number: { type: [integer, "null"] }
+        timestamp: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [error, message, status]
+      properties:
+        error: { type: string, description: "Machine-readable error code" }
+        message: { type: string }
+        status: { type: integer }
+        details: { type: object }

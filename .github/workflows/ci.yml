@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Lint
+        run: ruff check app tests
+
+      - name: Unit tests
+        run: pytest --cov=app --cov-report=term-missing
+        env:
+          GITHUB_TOKEN: dummy
+          GITHUB_OWNER: dummy-owner
+          GITHUB_REPO: dummy-repo
+          WEBHOOK_SECRET: dummy-secret
+          PORT: 8000
+
+      - name: Build Docker image
+        run: docker build -t github-issues-gateway .
